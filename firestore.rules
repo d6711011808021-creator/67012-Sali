@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Health check endpoint for connection verification
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'google.com');
+    }
+
+    // Transaction validation blueprint
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['userId', 'title', 'amount', 'type', 'category', 'date', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'title', 'amount', 'type', 'category', 'date', 'notes', 'paymentMethod', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+        (data.amount is int || data.amount is float) && data.amount > 0 && data.amount <= 1000000000 &&
+        data.type is string && (data.type == 'income' || data.type == 'expense') &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+        data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 50)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Monthly Budget validation blueprint
+    function isValidBudget(data) {
+      return data.keys().hasAll(['userId', 'month', 'monthlyBudget', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'month', 'monthlyBudget', 'savingsGoal', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.month is string && data.month.matches('^\\d{4}-\\d{2}$') &&
+        (data.monthlyBudget is int || data.monthlyBudget is float) && data.monthlyBudget >= 0 && data.monthlyBudget <= 1000000000 &&
+        (!('savingsGoal' in data) || ((data.savingsGoal is int || data.savingsGoal is float) && data.savingsGoal >= 0 && data.savingsGoal <= 1000000000)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Transactions Collection Rules
+    match /transactions/{transactionId} {
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(transactionId) && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(transactionId) && resource.data.userId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(transactionId) &&
+        isValidTransaction(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(transactionId) &&
+        isValidTransaction(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'amount', 'type', 'category', 'date', 'notes', 'paymentMethod', 'updatedAt']);
+    }
+
+    // Budgets Collection Rules
+    match /budgets/{budgetId} {
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(budgetId) && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(budgetId) && resource.data.userId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(budgetId) &&
+        isValidBudget(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(budgetId) &&
+        isValidBudget(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['monthlyBudget', 'savingsGoal', 'updatedAt']);
+    }
+  }
+}
